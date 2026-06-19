@@ -2,10 +2,10 @@ fx_version 'cerulean'
 game 'gta5'
 
 name 'esx_multicharacter'
-author 'indichepringlestype'
+author 'LEXIKON'
 description 'Multicharacter for ESX Legacy 1.13.5 '
-version '1.4.2'
-repository 'https://github.com/DEIN-USERNAME/esx_multicharacter'
+version '1.0.0'
+repository 'https://github.com/LEXIKON-Dev/esx-kashacter/'
 lua54 'yes'
 
 dependencies {
