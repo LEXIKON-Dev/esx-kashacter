@@ -31,6 +31,8 @@ local SLOTS = Config.Slots or 4
 local PREFIX = Config.Prefix or "char"
 local PRIMARY_IDENTIFIER = ESX.GetConfig().Identifier or GetConvar("sv_lan", "") == "true" and "ip" or "license"
 local PlayerCharacters = {}
+local hasDisabledColumn = false
+local USERS_QUERY = "SELECT identifier, accounts, job, job_grade, firstname, lastname, dateofbirth, sex, skin FROM users WHERE identifier LIKE ? OR identifier LIKE ?"
 
 local function SafeJsonDecode(value, fallback)
 	if not value or value == "" then
@@ -81,33 +83,22 @@ end
 
 local function SetupCharacters(source)
 	while not databaseConnected do
-		Wait(100)
+		Wait(50)
 	end
 
 	local licenseHash = GetIdentifier(source)
 	ESX.Players[licenseHash] = true
 
-	local slots = MySQL.scalar.await("SELECT slots FROM multicharacter_slots WHERE identifier = ?", { licenseHash }) or SLOTS
+	local likePrefix = PREFIX .. "%:" .. licenseHash
+	local likeLegacy = "Char%" .. licenseHash
+
+	local slots, result = MySQL.scalar.await(
+		"SELECT slots FROM multicharacter_slots WHERE identifier = ?",
+		{ licenseHash }
+	), MySQL.query.await(USERS_QUERY, { likePrefix, likeLegacy })
+
 	slots = math.max(tonumber(slots) or SLOTS, SLOTS)
 	PlayerCharacters[source] = {}
-
-	local result = MySQL.query.await(
-		"SELECT identifier, accounts, job, job_grade, firstname, lastname, dateofbirth, sex, skin, disabled FROM users WHERE identifier LIKE ? OR identifier LIKE ?",
-		{
-			PREFIX .. "%:" .. licenseHash,
-			"Char%" .. licenseHash,
-		}
-	)
-
-	if not result then
-		result = MySQL.query.await(
-			"SELECT identifier, accounts, job, job_grade, firstname, lastname, dateofbirth, sex, skin FROM users WHERE identifier LIKE ? OR identifier LIKE ?",
-			{
-				PREFIX .. "%:" .. licenseHash,
-				"Char%" .. licenseHash,
-			}
-		)
-	end
 
 	local characters = {}
 
@@ -141,7 +132,7 @@ local function SetupCharacters(source)
 					lastname = v.lastname or "",
 					dateofbirth = v.dateofbirth or "",
 					skin = SafeJsonDecode(v.skin, {}),
-					disabled = v.disabled == 1 or v.disabled == true,
+					disabled = hasDisabledColumn and (v.disabled == 1 or v.disabled == true) or false,
 					sex = v.sex == "m" and TranslateCap("male") or TranslateCap("female"),
 				}
 			end
@@ -200,7 +191,6 @@ local function DeleteCharacter(playerId, charid)
 	MySQL.transaction(queries, function(result)
 		if result then
 			print(("[^2INFO^7] Player ^5%s %s^7 has deleted a character ^5(%s)^7"):format(GetPlayerName(playerId), playerId, identifier))
-			Wait(50)
 			SetupCharacters(playerId)
 		else
 			print(("[^1ERROR^7] Failed to delete character ^5%s^7"):format(identifier))
@@ -243,10 +233,28 @@ MySQL.ready(function()
 			end
 		end
 
+		for i = 1, #DB_COLUMNS do
+			if DB_COLUMNS[i].TABLE_NAME == "users" and DB_COLUMNS[i].COLUMN_NAME == "disabled" then
+				hasDisabledColumn = true
+				break
+			end
+		end
+
+		if not hasDisabledColumn then
+			hasDisabledColumn = (MySQL.scalar.await(
+				"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'users' AND COLUMN_NAME = 'disabled'",
+				{ DATABASE }
+			) or 0) > 0
+		end
+
+		USERS_QUERY = hasDisabledColumn
+			and "SELECT identifier, accounts, job, job_grade, firstname, lastname, dateofbirth, sex, skin, disabled FROM users WHERE identifier LIKE ? OR identifier LIKE ?"
+			or "SELECT identifier, accounts, job, job_grade, firstname, lastname, dateofbirth, sex, skin FROM users WHERE identifier LIKE ? OR identifier LIKE ?"
+
 		databaseConnected = true
 
 		while not next(ESX.Jobs) do
-			Wait(500)
+			Wait(100)
 			ESX.Jobs = ESX.GetJobs()
 		end
 	end

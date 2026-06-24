@@ -1,26 +1,29 @@
 ESX = exports["es_extended"]:getSharedObject()
 
+local function Perf(key, default)
+	if Config.Performance and Config.Performance[key] ~= nil then
+		return Config.Performance[key]
+	end
+	return default
+end
+
 Citizen.CreateThread(function()
 	Citizen.CreateThread(function()
 		while not NetworkIsSessionStarted() do
-			Citizen.Wait(0)
+			Citizen.Wait(100)
 		end
 
 		exports.spawnmanager:setAutoSpawn(false)
-
-		while GetResourceState('esx_menu_default') ~= 'started' do
-			Citizen.Wait(0)
-		end
-
 		DoScreenFadeOut(0)
 		TriggerEvent("esx_multicharacter:SetupCharacters")
 	end)
 
-	local canRelog, cam, cam2, spawned = false, nil, nil, nil
+	local canRelog, cam, cam2, spawned, hidePlayers = false, nil, nil, nil, false
 	local selectedSlot, maxSlots = nil, Config.Slots or 4
 	local Characters = {}
 	local isChoosing = false
 	local uiReady = false
+	local worldLoaded = false
 
 	local function SerializeCharactersForNui(characters, slots)
 		local serialized = {}
@@ -69,6 +72,12 @@ Citizen.CreateThread(function()
 		SetEntityHeading(playerPed, vec.w)
 	end
 
+	local function EnsureMenuDefault()
+		while GetResourceState('esx_menu_default') ~= 'started' do
+			Citizen.Wait(50)
+		end
+	end
+
 	local function SetupSkinCreatorCamera()
 		local creator = Config.SkinCreator
 		local playerPed = PlayerPedId()
@@ -86,24 +95,54 @@ Citizen.CreateThread(function()
 		RenderScriptCams(true, false, 1, true, true)
 	end
 
-	local function WaitForWorldAtCoords(x, y, z)
+	local function ResetPlayerState()
+		local playerId = PlayerId()
+		local playerPed = PlayerPedId()
+
+		ClearFocus()
+		SetEntityCollision(playerPed, true, true)
+		SetEntityInvincible(playerPed, false)
+		SetPlayerInvincible(playerId, false)
+		SetPedCanRagdoll(playerPed, true)
+		FreezeEntityPosition(playerPed, false)
+		SetEntityVisible(playerPed, true, false)
+		MumbleSetVolumeOverride(playerId, -1.0)
+	end
+
+	local function WaitForWorldAtCoords(x, y, z, quick)
+		if quick and worldLoaded then
+			RequestCollisionAtCoord(x, y, z)
+			return
+		end
+
+		local poll = quick and 10 or 25
+		local collisionTimeout = quick and 2000 or 6000
+
 		RequestCollisionAtCoord(x, y, z)
 		SetFocusPosAndVel(x, y, z, 0.0, 0.0, 0.0)
 
-		local timeout = GetGameTimer() + 15000
+		local timeout = GetGameTimer() + collisionTimeout
 		while not HasCollisionLoadedAroundEntity(PlayerPedId()) and GetGameTimer() < timeout do
 			RequestCollisionAtCoord(x, y, z)
-			Citizen.Wait(0)
+			Citizen.Wait(poll)
 		end
 
-		NewLoadSceneStart(x, y, z, x, y, z, 80.0, 0)
-		timeout = GetGameTimer() + 10000
-		while IsNetworkLoadingScene() and GetGameTimer() < timeout do
-			Citizen.Wait(0)
+		if not quick then
+			NewLoadSceneStart(x, y, z, x, y, z, 80.0, 0)
+			timeout = GetGameTimer() + 4000
+			while IsNetworkLoadingScene() and GetGameTimer() < timeout do
+				Citizen.Wait(poll)
+			end
+			NewLoadSceneStop()
 		end
-		NewLoadSceneStop()
 
-		Citizen.Wait(500)
+		local worldWait = Perf('WorldLoadWait', 500)
+		if worldWait > 0 then
+			Citizen.Wait(worldWait)
+		end
+
+		ClearFocus()
+		worldLoaded = true
 	end
 
 	local function PlaySpawnCamera(spawn)
@@ -114,31 +153,43 @@ Citizen.CreateThread(function()
 		}
 		local heading = spawn.heading or spawn.w or Config.Spawn.w
 		local playerPed = PlayerPedId()
+		local fadeIn = Perf('FadeInDuration', 500)
 
 		hidePlayers = false
 		SetEntityVisible(playerPed, true, false)
 		SetEntityCoordsNoOffset(playerPed, pos.x, pos.y, pos.z, false, false, false, true)
 		SetEntityHeading(playerPed, heading)
 
-		WaitForWorldAtCoords(pos.x, pos.y, pos.z)
+		WaitForWorldAtCoords(pos.x, pos.y, pos.z, false)
+
+		if not Perf('SpawnCamera', true) then
+			DestroyCameras()
+			RenderScriptCams(false, false, 0, true, true)
+			DoScreenFadeIn(fadeIn)
+			return
+		end
 
 		DestroyCameras()
 		SetupSkyCamera()
 		RenderScriptCams(true, false, 0, true, true)
 
-		DoScreenFadeIn(500)
-		Citizen.Wait(500)
+		local spawnFadeIn = Perf('SpawnCameraFast', false) and fadeIn or 500
+		DoScreenFadeIn(spawnFadeIn)
+		Citizen.Wait(spawnFadeIn)
 
 		local sky = Config.SkyCam
+		local camDuration = Perf('SpawnCameraFast', false) and 400 or 900
+		local descendDuration = Perf('SpawnCameraFast', false) and 1200 or 3700
+
 		cam2 = CreateCamWithParams("DEFAULT_SCRIPTED_CAMERA", sky.x, sky.y, sky.z, 300.0, 0.0, 0.0, sky.w, false, 0)
 		PointCamAtCoord(cam2, pos.x, pos.y, pos.z + 200.0)
-		SetCamActiveWithInterp(cam2, cam, 900, true, true)
-		Citizen.Wait(900)
+		SetCamActiveWithInterp(cam2, cam, camDuration, true, true)
+		Citizen.Wait(camDuration)
 
 		cam = CreateCamWithParams("DEFAULT_SCRIPTED_CAMERA", pos.x, pos.y, pos.z + 200.0, 300.0, 0.0, 0.0, sky.w, false, 0)
 		PointCamAtCoord(cam, pos.x, pos.y, pos.z + 2.0)
-		SetCamActiveWithInterp(cam, cam2, 3700, true, true)
-		Citizen.Wait(3700)
+		SetCamActiveWithInterp(cam, cam2, descendDuration, true, true)
+		Citizen.Wait(descendDuration)
 
 		PlaySoundFrontend(-1, "Zoom_Out", "DLC_HEIST_PLANNING_BOARD_SOUNDS", 1)
 		RenderScriptCams(false, true, 500, true, true)
@@ -155,6 +206,8 @@ Citizen.CreateThread(function()
 			DestroyCam(cam, true)
 			cam = nil
 		end
+
+		ClearFocus()
 	end
 
 	local function ShowCharacterUI()
@@ -178,8 +231,10 @@ Citizen.CreateThread(function()
 			if isChoosing then
 				DisplayHud(false)
 				DisplayRadar(false)
+				Citizen.Wait(0)
+			else
+				Citizen.Wait(500)
 			end
-			Citizen.Wait(0)
 		end
 	end)
 
@@ -191,10 +246,12 @@ Citizen.CreateThread(function()
 		canRelog = false
 		isChoosing = true
 		uiReady = false
+		worldLoaded = false
 
-		DoScreenFadeOut(0)
+		local fadeOut = Perf('FadeOutDuration', 500)
+		DoScreenFadeOut(fadeOut)
 		while not IsScreenFadedOut() do
-			Citizen.Wait(10)
+			Citizen.Wait(0)
 		end
 
 		SetNuiFocus(false, false)
@@ -219,53 +276,76 @@ Citizen.CreateThread(function()
 		TriggerServerEvent("esx_multicharacter:SetupCharacters")
 	end)
 
+	local hideLoopsReady = false
+
 	StartLoop = function()
 		hidePlayers = true
 		MumbleSetVolumeOverride(PlayerId(), 0.0)
+
+		if hideLoopsReady then
+			return
+		end
+
+		hideLoopsReady = true
+
 		Citizen.CreateThread(function()
 			local keys = {18, 19, 21, 27, 61, 131, 172, 173, 155, 174, 175, 176, 177, 187, 188, 191, 201, 209, 254, 340, 352, 108, 109}
-			while hidePlayers do
-				DisableAllControlActions(0)
-				for i = 1, #keys do
-					EnableControlAction(0, keys[i], true)
-				end
-				SetEntityVisible(PlayerPedId(), false, false)
-				SetLocalPlayerVisibleLocally(1)
-				SetPlayerInvincible(PlayerId(), 1)
-				ThefeedHideThisFrame()
-				HideHudComponentThisFrame(11)
-				HideHudComponentThisFrame(12)
-				HideHudComponentThisFrame(21)
-				HideHudAndRadarThisFrame()
-				Citizen.Wait(0)
-				local vehicles = GetGamePool('CVehicle')
-				for i = 1, #vehicles do
-					SetEntityLocallyInvisible(vehicles[i])
+			while true do
+				if hidePlayers then
+					DisableAllControlActions(0)
+					for i = 1, #keys do
+						EnableControlAction(0, keys[i], true)
+					end
+					SetEntityVisible(PlayerPedId(), false, false)
+					SetLocalPlayerVisibleLocally(1)
+					SetPlayerInvincible(PlayerId(), 1)
+					ThefeedHideThisFrame()
+					HideHudComponentThisFrame(11)
+					HideHudComponentThisFrame(12)
+					HideHudComponentThisFrame(21)
+					HideHudAndRadarThisFrame()
+					Citizen.Wait(0)
+				else
+					Citizen.Wait(500)
 				end
 			end
-			local playerId, playerPed = PlayerId(), PlayerPedId()
-			MumbleSetVolumeOverride(playerId, -1.0)
-			SetEntityVisible(playerPed, true, false)
-			SetPlayerInvincible(playerId, false)
-			SetEntityCollision(playerPed, true, true)
-			SetPedCanRagdoll(playerPed, true)
-			FreezeEntityPosition(playerPed, false)
 		end)
+
+		Citizen.CreateThread(function()
+			local interval = Perf('HideLoopInterval', 250)
+			while true do
+				if hidePlayers then
+					local vehicles = GetGamePool('CVehicle')
+					for i = 1, #vehicles do
+						SetEntityLocallyInvisible(vehicles[i])
+					end
+					Citizen.Wait(interval)
+				else
+					Citizen.Wait(500)
+				end
+			end
+		end)
+
 		Citizen.CreateThread(function()
 			local playerPool = {}
-			while hidePlayers do
-				local players = GetActivePlayers()
-				for i = 1, #players do
-					local player = players[i]
-					if player ~= PlayerId() and not playerPool[player] then
-						playerPool[player] = true
-						NetworkConcealPlayer(player, true, true)
+			while true do
+				if hidePlayers then
+					local players = GetActivePlayers()
+					for i = 1, #players do
+						local player = players[i]
+						if player ~= PlayerId() and not playerPool[player] then
+							playerPool[player] = true
+							NetworkConcealPlayer(player, true, true)
+						end
 					end
+					Citizen.Wait(500)
+				else
+					for k in pairs(playerPool) do
+						NetworkConcealPlayer(k, false, false)
+						playerPool[k] = nil
+					end
+					Citizen.Wait(500)
 				end
-				Citizen.Wait(500)
-			end
-			for k in pairs(playerPool) do
-				NetworkConcealPlayer(k, false, false)
 			end
 		end)
 	end
@@ -291,13 +371,14 @@ Citizen.CreateThread(function()
 
 		Citizen.CreateThread(function()
 			local sky = Config.SkyCam
+			local quickLoad = Perf('QuickRelog', true)
 
 			if not cam or not IsCamActive(cam) then
 				DestroyCameras()
 				SetupSkyCamera()
 			end
 
-			WaitForWorldAtCoords(sky.x, sky.y, sky.z)
+			WaitForWorldAtCoords(sky.x, sky.y, sky.z, quickLoad)
 
 			ClearTimecycleModifier()
 			SetTimecycleModifier('hud_def_blur')
@@ -306,12 +387,16 @@ Citizen.CreateThread(function()
 			ShutdownLoadingScreenNui()
 			TriggerEvent('esx:loadingScreenOff')
 
-			DoScreenFadeIn(800)
+			local fadeIn = Perf('FadeInDuration', 800)
+			DoScreenFadeIn(fadeIn)
 			while not IsScreenFadedIn() do
-				Citizen.Wait(10)
+				Citizen.Wait(0)
 			end
 
-			Citizen.Wait(400)
+			if not Perf('FastLoad', true) then
+				Citizen.Wait(400)
+			end
+
 			ShowCharacterUI()
 		end)
 	end)
@@ -339,9 +424,10 @@ Citizen.CreateThread(function()
 		SetNuiFocus(false, false)
 		SendNUIMessage({ action = "closeui" })
 
-		DoScreenFadeOut(500)
+		local fadeOut = Perf('FadeOutDuration', 500)
+		DoScreenFadeOut(fadeOut)
 		while not IsScreenFadedOut() do
-			Citizen.Wait(10)
+			Citizen.Wait(0)
 		end
 
 		TriggerServerEvent('esx_multicharacter:CharacterChosen', slot, false)
@@ -359,14 +445,15 @@ Citizen.CreateThread(function()
 		SetNuiFocus(false, false)
 		SendNUIMessage({ action = "closeui" })
 
-		DoScreenFadeOut(500)
+		local fadeOut = Perf('FadeOutDuration', 500)
+		DoScreenFadeOut(fadeOut)
 		while not IsScreenFadedOut() do
-			Citizen.Wait(10)
+			Citizen.Wait(0)
 		end
 
 		TriggerServerEvent('esx_multicharacter:CharacterChosen', slot, true)
-		DoScreenFadeIn(500)
-		Citizen.Wait(300)
+		DoScreenFadeIn(Perf('FadeInDuration', 500))
+		Citizen.Wait(100)
 		TriggerEvent('esx_identity:showRegisterIdentity')
 		cb({})
 	end)
@@ -386,6 +473,8 @@ Citizen.CreateThread(function()
 	RegisterNetEvent('esx:playerLoaded')
 	AddEventHandler('esx:playerLoaded', function(playerData, isNew, skin)
 		local playerPed = PlayerPedId()
+		local fadeIn = Perf('FadeInDuration', 500)
+		local fadeOut = Perf('FadeOutDuration', 500)
 
 		ClearTimecycleModifier()
 		SetTimecycleModifier('default')
@@ -401,14 +490,17 @@ Citizen.CreateThread(function()
 			SetModelAsNoLongerNeeded(model)
 			skin = Config.Default
 			skin.sex = sex
+			playerPed = PlayerPedId()
 		end
 
+		SetEntityCollision(playerPed, true, true)
 		FreezeEntityPosition(playerPed, true)
 		SetEntityVisible(playerPed, true, false)
 
 		if isNew then
-			DoScreenFadeIn(500)
-			Citizen.Wait(300)
+			EnsureMenuDefault()
+			DoScreenFadeIn(fadeIn)
+			Citizen.Wait(100)
 
 			SetPlayerAt(Config.SkinCreator)
 			TriggerEvent('skinchanger:loadSkin', skin)
@@ -424,11 +516,11 @@ Citizen.CreateThread(function()
 					finished = true
 				end)
 			end)
-			repeat Citizen.Wait(200) until finished
+			repeat Citizen.Wait(100) until finished
 
-			DoScreenFadeOut(500)
+			DoScreenFadeOut(fadeOut)
 			while not IsScreenFadedOut() do
-				Citizen.Wait(10)
+				Citizen.Wait(0)
 			end
 
 			PlaySpawnCamera(ToCoords(Config.Spawn))
@@ -438,9 +530,9 @@ Citizen.CreateThread(function()
 			local selectedCharacterSkin = spawned and Characters[spawned] and Characters[spawned].skin or nil
 			TriggerEvent('skinchanger:loadSkin', skin or selectedCharacterSkin)
 
-			DoScreenFadeOut(500)
+			DoScreenFadeOut(fadeOut)
 			while not IsScreenFadedOut() do
-				Citizen.Wait(10)
+				Citizen.Wait(0)
 			end
 
 			PlaySpawnCamera(spawn)
@@ -449,7 +541,8 @@ Citizen.CreateThread(function()
 		isChoosing = false
 		DisplayHud(true)
 		DisplayRadar(true)
-		FreezeEntityPosition(PlayerPedId(), false)
+		hidePlayers = false
+		ResetPlayerState()
 
 		TriggerServerEvent('esx:onPlayerSpawn')
 		TriggerEvent('esx:onPlayerSpawn')
@@ -464,9 +557,12 @@ Citizen.CreateThread(function()
 
 	RegisterNetEvent('esx:onPlayerLogout')
 	AddEventHandler('esx:onPlayerLogout', function()
-		DoScreenFadeOut(10)
+		hidePlayers = false
+		ResetPlayerState()
+
+		DoScreenFadeOut(0)
 		while not IsScreenFadedOut() do
-			Citizen.Wait(10)
+			Citizen.Wait(0)
 		end
 		spawned = false
 		canRelog = false
@@ -474,17 +570,19 @@ Citizen.CreateThread(function()
 		TriggerEvent('esx_skin:resetFirstSpawn')
 	end)
 
-	RegisterCommand('relog', function()
-		if not canRelog then
-			return ESX.ShowNotification('Bitte warte einen Moment...')
-		end
+	if Config.Relog then
+		RegisterCommand('relog', function()
+			if not canRelog then
+				return ESX.ShowNotification('Bitte warte einen Moment...')
+			end
 
-		canRelog = false
-		TriggerServerEvent('esx_multicharacter:relog')
-		SetTimeout(5000, function()
-			canRelog = true
-		end)
-	end, false)
+			canRelog = false
+			TriggerServerEvent('esx_multicharacter:relog')
+			SetTimeout(Perf('RelogCooldown', 5000), function()
+				canRelog = true
+			end)
+		end, false)
 
-	TriggerEvent('chat:addSuggestion', '/relog', 'Zurück zur Charakterauswahl wechseln')
+		TriggerEvent('chat:addSuggestion', '/relog', 'Zurück zur Charakterauswahl wechseln')
+	end
 end)

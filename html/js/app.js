@@ -120,7 +120,7 @@ function updateButtons() {
 }
 
 function showUi() {
-  $(".main-container").fadeIn(200);
+  $(".main-container").stop(true, true).fadeIn(100);
 }
 
 function hideUi() {

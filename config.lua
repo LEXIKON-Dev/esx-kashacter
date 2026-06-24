@@ -16,6 +16,19 @@ else
 	Config.Spawn = vector4(-1102.8119, -2849.6484, 14.8826, 330.6558)
 	Config.Relog = true
 
+	-- Performance: schnelleres Laden, Relog und weniger Client-Last
+	Config.Performance = {
+		FastLoad = true,           -- Kürzere Fades und Wartezeiten (Char-Auswahl)
+		SpawnCamera = true,        -- Kamerafahrt beim Charakter-Spielen
+		SpawnCameraFast = false,   -- false = volle Spawn-Animation wie zuvor
+		QuickRelog = true,         -- Beim Relog schwere World-Loads überspringen
+		WorldLoadWait = 50,        -- ms nach Collision-Load (Standard war 500)
+		FadeInDuration = 300,
+		FadeOutDuration = 200,
+		RelogCooldown = 1500,      -- ms bis /relog wieder erlaubt (Standard war 5000)
+		HideLoopInterval = 250,    -- ms zwischen Fahrzeug-Versteck-Updates (Standard war jedes Frame)
+	}
+
 	Config.Default = {
 		mom = 21,
 		dad = 0,
